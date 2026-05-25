@@ -1,0 +1,89 @@
+# =============================================================================
+# Build outputs (CMake + MSVC)
+# =============================================================================
+build/
+Builds/
+out/
+cmake-build-*/
+
+# =============================================================================
+# Compiled binaries & libraries
+# =============================================================================
+*.exe
+*.dll
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.idb
+*.ipdb
+*.iobj
+*.obj
+*.o
+*.a
+*.so
+*.dylib
+*.res
+*.pch
+
+# Linker / MSBuild leftovers
+*.tlog/
+*.lastbuildstate
+*.recipe
+*.FileListAbsolute.txt
+*.Build.CppClean.log
+*.unsuccessfulbuild
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Backup from locked exe during rebuild
+*.bak
+*.old
+
+# =============================================================================
+# CMake generated (outside build/ if configured elsewhere)
+# =============================================================================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# =============================================================================
+# IDE / editor
+# =============================================================================
+.vs/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*~
+*.sublime-project
+*.sublime-workspace
+
+# =============================================================================
+# OS
+# =============================================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# =============================================================================
+# JUCE / plugin host runtime
+# =============================================================================
+# User app data is outside repo; keep local test dumps out of tree
+*.log
+
+# =============================================================================
+# Secrets & local overrides (never commit)
+# =============================================================================
+.env
+.env.*
+*.local
