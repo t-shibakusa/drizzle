@@ -53,6 +53,14 @@ private:
     juce::TextButton addPathButton { juce::String::fromUTF8 (u8"\u8ffd\u52a0...") };
     juce::TextButton removePathButton { juce::String::fromUTF8 (u8"\u524a\u9664") };
     juce::Label aaxNoteLabel;
+    juce::Label vstNoteLabel;
+    juce::Label hostIdentityLabel;
+    juce::Label licenseCompatStatusLabel;
+    juce::Label hostIdentityNoteLabel;
+    juce::TextButton openLicenseCompatButton;
+    juce::TextButton installLicenseCompatButton;
+    juce::TextButton restartLicenseCompatButton;
+    juce::ComboBox hostIdentityCombo;
     juce::Label pluginNameLabel;
     juce::ComboBox pluginSelector;
     juce::Slider gainSlider;

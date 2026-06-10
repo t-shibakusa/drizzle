@@ -1,5 +1,7 @@
 #include "SettingsPanels.h"
 #include "DrizzleTheme.h"
+#include "../SessionSettings.h"
+#include "../Vst3HostIdentity.h"
 
 AudioSettingsPanel::AudioSettingsPanel (AudioEngine& engine)
     : audioEngine (engine)
@@ -59,6 +61,79 @@ VstSettingsPanel::VstSettingsPanel (AudioEngine& engine)
         juce::dontSendNotification);
     DrizzleTheme::applyLabel (aaxNoteLabel, true);
 
+    vstNoteLabel.setText (juce::String::fromUTF8 (
+        u8"VST/VST2 (.dll) \u306f\u3053\u306e\u30d3\u30eb\u30c9\u3067\u306f\u672a\u5bfe\u5fdc\u3067\u3059\u3002VST3 \u3092\u4f7f\u7528\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
+        u8"\u3053\u3053\u3067\u8ffd\u52a0\u3057\u305f\u30d5\u30a9\u30eb\u30c0\u5185\u306e .vst3 \u306f\u3001\u518d\u30b9\u30ad\u30e3\u30f3\u5f8c\u306b VST3 \u4e00\u89a7\u306b\u8868\u793a\u3055\u308c\u307e\u3059\u3002"),
+        juce::dontSendNotification);
+    DrizzleTheme::applyLabel (vstNoteLabel, true);
+
+    hostIdentityLabel.setText (juce::String::fromUTF8 (u8"\u30e9\u30a4\u30bb\u30f3\u30b9\u8a8d\u8a3c\u306e\u305f\u3081\u306e\u8d77\u52d5\u65b9\u6cd5"),
+                               juce::dontSendNotification);
+    DrizzleTheme::applyLabel (hostIdentityLabel);
+
+    const auto compatExe = DrizzleVst3Host::getLicenseCompatReaperExecutable();
+    const auto installedExe = DrizzleVst3Host::getInstalledLicenseCompatExecutable();
+    const auto compatPath = compatExe.getFullPathName();
+    const bool runningCompat = DrizzleVst3Host::isLicenseCompatProcess();
+    const bool hasInstalledCopy = installedExe.existsAsFile();
+
+    if (runningCompat)
+    {
+        juce::String status = juce::String::fromUTF8 (u8"\u73fe\u5728: reaper.exe \u304b\u3089\u8d77\u52d5\u4e2d\uff08\u30e9\u30a4\u30bb\u30f3\u30b9\u4e92\u63db\u6709\u52b9\uff09");
+        status << "\n" << juce::File::getSpecialLocation (juce::File::currentApplicationFile).getFullPathName();
+        licenseCompatStatusLabel.setText (status, juce::dontSendNotification);
+        licenseCompatStatusLabel.setColour (juce::Label::textColourId, juce::Colours::lightgreen);
+    }
+    else
+    {
+        licenseCompatStatusLabel.setText (juce::String::fromUTF8 (
+            u8"\u73fe\u5728: Drizzle.exe \u304b\u3089\u8d77\u52d5\u4e2d \u2192 \u81ea\u52d5\u3067 reaper.exe \u306b\u5207\u308a\u66ff\u3048\u308b\u306f\u305a\u3067\u3059"),
+            juce::dontSendNotification);
+        licenseCompatStatusLabel.setColour (juce::Label::textColourId, juce::Colours::orange);
+    }
+    DrizzleTheme::applyLabel (licenseCompatStatusLabel);
+
+    hostIdentityNoteLabel.setText (juce::String::fromUTF8 (
+        u8"XLN \u306f\u30db\u30b9\u30c8\u306e exe \u540d\u3067\u30e9\u30a4\u30bb\u30f3\u30b9 ID \u3092\u5224\u5b9a\u3057\u307e\u3059\u3002"
+        u8"\u307e\u3060\u8a8d\u8a3c\u306b\u5931\u6557\u3059\u308b\u5834\u5408\u306f\u300cReaper \u30d5\u30a9\u30eb\u30c0\u3078\u30a4\u30f3\u30b9\u30c8\u30fc\u30eb\u300d\u3092\u5b9f\u884c\u3057\u3066\u304b\u3089 Drizzle \u3092\u518d\u8d77\u52d5\u3057\u3066\u304f\u3060\u3055\u3044\u3002\n\n"
+        u8"\u73fe\u5728\u306e\u8d77\u52d5\u5148:\n")
+        + compatPath
+        + (hasInstalledCopy
+               ? juce::String::fromUTF8 (u8"\n\nReaper \u30d5\u30a9\u30eb\u30c0\u30a4\u30f3\u30b9\u30c8\u30fc\u30eb\u6e08\u307f:\n") + installedExe.getFullPathName()
+               : juce::String::fromUTF8 (u8"\n\n\u203b \u307e\u3060 Reaper \u30d5\u30a9\u30eb\u30c0\u672a\u30a4\u30f3\u30b9\u30c8\u30fc\u30eb\u3002\u4e0b\u306e\u30dc\u30bf\u30f3\u3092\u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002")),
+        juce::dontSendNotification);
+    DrizzleTheme::applyLabel (hostIdentityNoteLabel, true);
+
+    openLicenseCompatButton.setButtonText (juce::String::fromUTF8 (u8"\u30d5\u30a9\u30eb\u30c0\u3092\u958b\u304f"));
+    openLicenseCompatButton.onClick = [compatExe]
+    {
+        compatExe.getParentDirectory().startAsProcess();
+    };
+
+    installLicenseCompatButton.setButtonText (juce::String::fromUTF8 (u8"Reaper \u30d5\u30a9\u30eb\u30c0\u3078\u30a4\u30f3\u30b9\u30c8\u30fc\u30eb"));
+    installLicenseCompatButton.onClick = []
+    {
+        if (! DrizzleVst3Host::installLicenseCompatToReaperFolder())
+        {
+            juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                        juce::String::fromUTF8 (u8"\u30a4\u30f3\u30b9\u30c8\u30fc\u30eb"),
+                                                        juce::String::fromUTF8 (u8"install_to_reaper_folder.bat \u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002"));
+        }
+    };
+
+    restartLicenseCompatButton.setButtonText (juce::String::fromUTF8 (u8"reaper.exe \u3067\u518d\u8d77\u52d5"));
+    restartLicenseCompatButton.onClick = []
+    {
+        if (! DrizzleVst3Host::launchLicenseCompatAndQuit())
+        {
+            juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                        juce::String::fromUTF8 (u8"\u30e9\u30a4\u30bb\u30f3\u30xb9\u4e92\u63db\u30e2\u30fc\u30c9"),
+                                                        juce::String::fromUTF8 (u8"LicenseCompat\\reaper.exe \u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002"));
+        }
+    };
+
+    hostIdentityCombo.setVisible (false);
+
     pathsList.setRowHeight (22);
     pathsList.setMultipleSelectionEnabled (false);
 
@@ -101,6 +176,13 @@ VstSettingsPanel::VstSettingsPanel (AudioEngine& engine)
     addAndMakeVisible (addPathButton);
     addAndMakeVisible (removePathButton);
     addAndMakeVisible (aaxNoteLabel);
+    addAndMakeVisible (vstNoteLabel);
+    addAndMakeVisible (hostIdentityLabel);
+    addAndMakeVisible (licenseCompatStatusLabel);
+    addAndMakeVisible (hostIdentityNoteLabel);
+    addAndMakeVisible (openLicenseCompatButton);
+    addAndMakeVisible (installLicenseCompatButton);
+    addAndMakeVisible (restartLicenseCompatButton);
     addAndMakeVisible (pluginNameLabel);
     addAndMakeVisible (pluginSelector);
     addAndMakeVisible (gainSlider);
@@ -116,14 +198,14 @@ VstSettingsPanel::VstSettingsPanel (AudioEngine& engine)
     updatePluginLabel();
     refreshPluginList();
 
-    setSize (600, 780);
+    setSize (600, 900);
 }
 
 VstSettingsPanel::~VstSettingsPanel()
 {
     formatTabs.removeChangeListener (this);
     audioEngine.getPluginChain().removeChangeListener (this);
-    audioEngine.getPluginChain().releaseAll();
+    audioEngine.getPluginChain().hidePluginEditor();
 }
 
 void VstSettingsPanel::changeListenerCallback (juce::ChangeBroadcaster* source)
@@ -174,8 +256,12 @@ void VstSettingsPanel::refreshPathsList()
 {
     const auto category = getActiveCategory();
     const bool isAax = category == PluginPathCategory::Aax;
+    const bool showVstNote = ! PluginChain::isVst2HostingEnabled()
+                             && (category == PluginPathCategory::Vst
+                                 || category == PluginPathCategory::Vst2);
 
     aaxNoteLabel.setVisible (isAax);
+    vstNoteLabel.setVisible (showVstNote);
     scanButton.setEnabled (! isAax);
 
     pathsList.updateContent();
@@ -284,7 +370,19 @@ void VstSettingsPanel::resized()
     removePathButton.setBounds (pathButtons.removeFromLeft (72).reduced (0, 2));
     pathsList.setBounds (area.removeFromTop (130));
     area.removeFromTop (4);
-    aaxNoteLabel.setBounds (area.removeFromTop (28));
+    auto noteArea = area.removeFromTop (40);
+    aaxNoteLabel.setBounds (noteArea);
+    vstNoteLabel.setBounds (noteArea);
+    area.removeFromTop (8);
+
+    hostIdentityLabel.setBounds (area.removeFromTop (20));
+    licenseCompatStatusLabel.setBounds (area.removeFromTop (40));
+    auto compatButtons = area.removeFromTop (28);
+    openLicenseCompatButton.setBounds (compatButtons.removeFromLeft (110).reduced (0, 2));
+    installLicenseCompatButton.setBounds (compatButtons.removeFromLeft (220).reduced (0, 2));
+    restartLicenseCompatButton.setBounds (compatButtons.removeFromLeft (150).reduced (0, 2));
+    area.removeFromTop (6);
+    hostIdentityNoteLabel.setBounds (area.removeFromTop (96));
     area.removeFromTop (8);
 
     pluginNameLabel.setBounds (area.removeFromTop (22));

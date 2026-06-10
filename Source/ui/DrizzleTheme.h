@@ -35,6 +35,39 @@ inline void applyTrackToggleButton (juce::TextButton& button, bool isOn, bool is
     button.setColour (juce::TextButton::textColourOnId, onText);
 }
 
+inline bool launchUrlInChrome (const juce::URL& url)
+{
+    if (! url.isWellFormed())
+        return false;
+
+    const juce::String urlString = url.toString (true);
+
+#if JUCE_WINDOWS
+    const juce::StringArray chromePaths {
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+            .getChildFile ("AppData/Local/Google/Chrome/Application/chrome.exe").getFullPathName()
+    };
+
+    for (const auto& path : chromePaths)
+    {
+        const juce::File chrome (path);
+
+        if (! chrome.existsAsFile())
+            continue;
+
+        juce::ChildProcess process;
+        const auto command = "\"" + chrome.getFullPathName() + "\" \"" + urlString + "\"";
+
+        if (process.start (command))
+            return true;
+    }
+#endif
+
+    return url.launchInDefaultBrowser();
+}
+
 inline void paintPanel (juce::Graphics& g, juce::Rectangle<int> bounds, const juce::String& title)
 {
     g.setColour (panelBackground());

@@ -1,311 +1,179 @@
-# Streaming Audio Studio
+# Drizzle
 
-YouTube配信・弾き語り配信向けの
-軽量リアルタイム音声処理 & 配信ツール。
+配信向けリアルタイム音声処理ツール（Windows）。
 
-## 概要
+OBS・Reaper・仮想オーディオケーブルなどに分散しがちな配信まわりの音声まわりを、ひとつのアプリにまとめることを目指しています。弾き語り・雑談・歌配信・ASMR など、低遅延のライブ音声処理を想定しています。
 
-本プロジェクトは、
-
-- OBS
-- Reaper
-- 仮想オーディオケーブル
-
-など複数ツールを必要とする現在の配信環境を、
-単一アプリへ統合することを目的とする。
-
-特に以下の用途を想定：
-
-- 弾き語り配信
-- 雑談配信
-- ASMR
-- 歌配信
-- 低遅延リアルタイム音声処理
+> **コンセプト:** OBS の完全代替ではなく、「配信に必要な音声をできるだけ簡単に扱う」ことに特化します。
 
 ---
 
-# コンセプト
+## 現状できること（v0.1）
 
-「OBSの代替」を目指すのではなく、
+### オーディオ
 
-> “配信に必要な音声機能を、
-> できる限り簡単に扱えること”
+- **ASIO / WASAPI** などによる入出力デバイス選択（設定は次回起動時に復元）
+- **マルチトラックミキサー**（1〜10 トラック）
+  - トラック名の編集（例: `トラック1`）
+  - 入力チャンネルの選択（オーディオ IF の IN ごと）
+  - フェーダー（音量）・パン
+  - **Solo** / **Mute**
+  - トラックの追加・削除（削除時は確認ダイアログ）
+  - トラック欄は高さ固定＋縦スクロール
+- **VST3 ホスト**（1 プラグインをチェインに挿入）
+  - スキャンディレクトリの登録（VST / VST2 / VST3 / AAX パス。AAX のホストは未対応）
+  - リスト選択・ファイル参照でロード、エディタ表示、Clear でアンロード
+- 信号経路: `入力 → トラックミキサー → [VST3] → Gain → 出力`
 
-を重視する。
+### UI
 
-万能化ではなく、
-配信特化・シンプル化を目的とする。
+- OBS + DAW 風のメインレイアウト（配信プレビュー・コメント等の一部パネルは **UI モック**）
+- メニュー **設定** からオーディオ設定・VST プラグイン設定を開く
+- ウィンドウ位置・サイズの保存
 
----
+### その他
 
-# 想定機能
-
-## 音声機能（最重要）
-
-- マイク入力
-- ギター入力
-- VST3対応
-- EQ
-- Compressor
-- Noise Gate
-- Reverb
-- Limiter
-- 簡易ミキサー
-- モニタリング
-
----
-
-## 配信機能
-
-- YouTube RTMP配信
-- 録画
-- BGM再生
-- シーン切替
+- アプリアイコン（`icon.png`）
+- 終了時のオーディオ／プラグイン DLL の解放
 
 ---
 
-## 映像機能
+## まだ未実装・制限
 
-- カメラ入力
-- 画面キャプチャ
-- 画像表示
-- テロップ表示
-
----
-
-# システムイメージ
-
-```text
-Mic / Guitar / BGM
-        ↓
-    VST Effects
-        ↓
-      Mixer
-        ↓
- Streaming / Recording
-```
-
----
-
-# 技術構成
-
-## 言語
-
-- C++
-
----
-
-## メインフレームワーク
-
-- JUCE
-
-用途：
-
-- オーディオ処理
-- VSTホスト
-- ASIO / WASAPI
-- UI作成
-
----
-
-## 将来的に利用検討
-
-### 配信関連
-
-- libobs
-- FFmpeg
-
-### OBS連携
-
-- OBS WebSocket
-
----
-
-# 開発ロードマップ
-
-# Phase 1
-## 音声エンジン基礎
-
-### 目標
-
-マイク入力 → VST → スピーカー出力
-
-を成立させる。
-
-### 内容
-
-- JUCE導入
-- AudioPluginHost解析
-- ASIO対応
-- VST3ロード
-- 低遅延音声出力
-
----
-
-# Phase 2
-## マイクエフェクター化
-
-### 機能追加
-
-- EQ
-- Compressor
-- Noise Gate
-- Reverb
-- 音量メーター
-- プリセット保存
-
-### 目的
-
-配信向けリアルタイム音声処理。
-
----
-
-# Phase 3
-## 簡易ミキサー化
-
-### 機能追加
-
-- ギター入力
-- BGM入力
-- Ducking
-- マスター出力
-- モニター出力
-
-### イメージ
-
-```text
-Mic ─┐
-Guitar ─┼→ Mixer → Master
-BGM ─┘
-```
-
----
-
-# Phase 4
-## OBS連携
-
-### 内容
-
+- マスター・フェーダー / Mute / Mono の **オーディオへの反映**（UI と設定保存のみの状態）
+- RTMP 配信・録画・OBS 連携（画面はモック）
 - 仮想オーディオ出力
-- OBS音声入力
-- OBS WebSocket制御
-
-### この段階
-
-OBS + 自作音声エンジン構成。
+- 複数 VST のチェイン
+- AAX プラグインのホスト（パス登録のみ）
 
 ---
 
-# Phase 5
-## 配信機能統合
+## 動作環境
 
-### 機能追加
-
-- RTMP配信
-- 録画
-- カメラ入力
-- 画面キャプチャ
-- シーン切替
+| 項目 | 内容 |
+|------|------|
+| OS | Windows 10 / 11（開発・検証は Windows 11） |
+| ビルド | Visual Studio 2022、CMake 3.22+ |
+| フレームワーク | [JUCE](https://juce.com/)（リポジトリ外に配置） |
+| オーディオ | ASIO 対応 IF 推奨（WASAPI も可） |
 
 ---
 
-# 開発方針
+## ビルド方法
 
-## 最優先
+### 前提
 
-- 低遅延
-- 音切れ防止
-- 安定性
+- Visual Studio 2022（「C++ によるデスクトップ開発」）
+- CMake（PATH に追加）
+- JUCE をクローンまたは展開（例: `C:\dev\JUCE`）
+- `CMakeLists.txt` の `add_subdirectory("C:/dev/JUCE" JUCE)` を自分の JUCE パスに合わせて変更
 
----
+初回セットアップの詳細は [INSTALL.md](INSTALL.md) を参照してください。
 
-## 後回しにするもの
+### 手順（PowerShell、リポジトリルート）
 
-- 高度な映像編集
-- 多機能DAW化
-- 複雑なタイムライン編集
+```powershell
+# 実行中の Drizzle があれば終了
+taskkill /F /IM Drizzle.exe 2>$null
 
----
+# 構成（初回・CMakeLists 変更時）
+cmake -S . -B build
 
-# MVP（最初の完成目標）
+# ビルド（Release）
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
+  build\Drizzle.sln /p:Configuration=Release /m
+```
 
-## 最低限完成させるもの
+実行ファイル:
 
-- マイク入力
-- VST3を挿せる
-- 音を出せる
-- EQ / Comp / Reverb
-- 配信可能
+```text
+build\Drizzle_artefacts\Release\Drizzle.exe
+```
 
----
+`Drizzle.exe` がロックされてリンクに失敗する場合は、タスクマネージャーでプロセスを終了するか、既存の exe をリネームしてから再ビルドしてください。
 
-# 開発環境
+### オプション: VST2 ホスト
 
-## 必要ツール
+[Steinberg VST2 SDK](https://www.steinberg.net/vst2sdk) を取得し、CMake 構成時にパスを指定します。
 
-- Visual Studio 2022
-- CMake
-- JUCE
-- ASIO SDK
-- Git
-
----
-
-# 初期タスク
-
-## Step 1
-
-JUCE導入。
+```powershell
+cmake -S . -B build -DDRIZZLE_VST2_SDK_PATH="C:/path/to/VST2_SDK"
+```
 
 ---
 
-## Step 2
+## 使い方（概要）
 
-AudioPluginHostをビルド。
+1. `Drizzle.exe` を起動する。
+2. **設定 → オーディオ設定** でデバイス（ASIO 推奨）・バッファサイズを選ぶ。
+3. 左の **トラック** 欄で入力・フェーダー・Solo / Mute を調整する。必要なら **+ トラックを追加**。
+4. **設定 → VST プラグイン設定** でスキャンパスを登録し **Scan** → プラグインを **Load**（Waves は WaveShell 経由。詳細は下記）。
+5. 終了時に設定は `%APPDATA%\Drizzle\` に自動保存される。
 
----
+### 設定ファイルの保存先
 
-## Step 3
+| ファイル | 内容 |
+|----------|------|
+| `%APPDATA%\Drizzle\audio_settings.xml` | オーディオデバイス設定 |
+| `%APPDATA%\Drizzle\session_settings.xml` | トラック・マスター・ウィンドウ位置など |
+| `%APPDATA%\Drizzle\plugin_paths.xml` | プラグインスキャンディレクトリ |
 
-以下を理解：
+### Waves プラグイン利用時
 
-- AudioDeviceManager
-- AudioProcessor
-- AudioProcessorGraph
-- VSTロード
-
----
-
-## Step 4
-
-自作VSTホスト作成。
-
----
-
-# 最終目標
-
-「OBS + Reaper」を置き換えるのではなく、
-
-> “弾き語り・雑談配信を
-> 最も快適に行えるツール”
-
-を目指す。
+- `C:\Program Files\Common Files\VST3` の **WaveShell\*.vst3** 経由で個別プラグインを選ぶ。
+- `Plug-Ins V16` フォルダ内の `.vst3` を直接 Browse しない。
+- リストの **WaveShell 本体** はロード対象外。個別プラグイン名を選ぶ。
+- ライセンスエラー時は Waves Central でログイン・同期・修復を試す。
 
 ---
 
-# メモ
+## プロジェクト構成
 
-## 重要
+```text
+drizzle/
+├── icon.png              # アプリアイコン
+├── CMakeLists.txt
+├── README.md
+├── INSTALL.md            # 開発環境のセットアップ
+├── toCursor.md           # 開発引継ぎ・実装メモ
+├── Source/
+│   ├── Main.cpp / MainComponent.*
+│   ├── AudioEngine.*
+│   ├── PluginChain.* / PluginScanPaths.*
+│   ├── TrackMixerProcessor.*
+│   ├── SessionSettings.*
+│   ├── ApplicationShutdown.h
+│   └── ui/
+│       ├── DrizzlePanels.*
+│       ├── SettingsPanels.*
+│       ├── DrizzleTheme.h
+│       └── MixerFaderLookAndFeel.h
+└── build/                # 生成物（git 管理外）
+```
 
-最初から完成品を目指さない。
+---
 
-まずは：
+## ロードマップ（概要）
 
-- 音が出る
-- VSTが動く
-- 遅延しない
+| 段階 | 内容 |
+|------|------|
+| **現在** | マルチトラックミキサー + VST3 ホスト + ASIO、配信用 UI の骨格 |
+| 今後 | マスター音量のオーディオ反映、仮想オーディオ出力 |
+| 将来 | OBS 連携、RTMP 配信・録画、映像まわり |
 
-ここを目標とする。
+詳細な開発状況・既知問題は [toCursor.md](toCursor.md) を参照してください。
 
-リアルタイム音声処理は、
-UIより先に安定性が重要。
+---
+
+## ライセンス
+
+（リポジトリに LICENSE が無い場合は、プロジェクトオーナーが追記してください。）
+
+JUCE の利用には [JUCE ライセンス](https://juce.com/juce-legal/) に従ってください。VST2 SDK を有効にする場合は Steinberg のライセンス条件も適用されます。
+
+---
+
+## 関連ドキュメント
+
+- [INSTALL.md](INSTALL.md) — 開発環境構築（Visual Studio / CMake / JUCE / ASIO）
+- [toCursor.md](toCursor.md) — 実装詳細・引継ぎ用

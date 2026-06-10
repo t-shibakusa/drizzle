@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
 #include <atomic>
+#include <functional>
 
 class TrackMixerProcessor final : public juce::AudioProcessor
 {
@@ -15,10 +16,11 @@ public:
     {
         juce::String name;
         int inputChannelIndex = 0;
-        float gain = 0.75f;
+        float gainDb = 0.0f;
         float pan = 0.5f;
         bool mute = false;
         bool solo = false;
+        juce::uint32 panelColourArgb = 0;
         std::atomic<float> peakLevel { 0.0f };
     };
 
@@ -57,9 +59,20 @@ public:
 
     void resetTrackToDefaults (int index, const juce::String& defaultName);
 
+    void setConnectedInputChannelCount (int count) noexcept;
+
+    using TrackAudioCallback = std::function<void (int trackIndex, juce::AudioBuffer<float>& trackBuffer, int numSamples)>;
+
+    void setTrackAudioCallback (TrackAudioCallback callback);
+    void mixFromDeviceBuffer (const juce::AudioBuffer<float>& deviceBuffer,
+                              juce::AudioBuffer<float>& stereoOutput,
+                              int numDeviceInputChannels);
+
 private:
+    TrackAudioCallback trackAudioCallback;
     void copyTrackState (int destIndex, int srcIndex) noexcept;
 
     int numTracks = minTracks;
+    int connectedInputChannelCount = 2;
     std::array<TrackState, maxTracks> tracks;
 };

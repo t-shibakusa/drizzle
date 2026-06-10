@@ -1,4 +1,7 @@
 #include "DrizzlePanels.h"
+#include "TrackPluginPanel.h"
+#include "MixerDbScale.h"
+#include "../Vst3HostIdentity.h"
 #include <functional>
 
 namespace
@@ -27,6 +30,15 @@ void paintVerticalMeter (juce::Graphics& g, juce::Rectangle<int> area, float lev
                                DrizzleTheme::meterRed(), 0, 0, false);
     g.setGradientFill (grad);
     g.fillRoundedRectangle (filled.toFloat(), 2.0f);
+}
+
+juce::String formatLiveDuration (double seconds)
+{
+    const int total = juce::jmax (0, (int) seconds);
+    const int hours = total / 3600;
+    const int minutes = (total % 3600) / 60;
+    const int secs = total % 60;
+    return juce::String::formatted ("%02d:%02d:%02d", hours, minutes, secs);
 }
 } // namespace
 
@@ -139,15 +151,78 @@ private:
 
 namespace
 {
-constexpr int kTrackRowHeight      = 110;
+constexpr int kTrackRowContentHeight = 110;
+constexpr int kTrackRowGap           = 8;
+constexpr int kTrackRowHeight        = kTrackRowContentHeight + kTrackRowGap;
 constexpr int kAddTrackButtonHeight = 52;
 constexpr int kMasterSectionHeight  = 130;
 constexpr int kPanelTitleHeight     = 28;
-constexpr int kFaderWidth           = 42;
+constexpr int kFaderWidth           = 76;
 constexpr int kFaderMeterGap        = 12;
 } // namespace
 
 //==============================================================================
+class TrackColourSwatchButton final : public juce::Component
+{
+public:
+    std::function<void()> onClick;
+
+    void setColour (juce::Colour newColour)
+    {
+        swatchColour = newColour;
+        repaint();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto bounds = getLocalBounds().toFloat().reduced (1.0f);
+
+        g.setColour (swatchColour);
+        g.fillRoundedRectangle (bounds, 4.0f);
+        g.setColour (juce::Colours::white.withAlpha (0.25f));
+        g.drawRoundedRectangle (bounds, 4.0f, 1.0f);
+    }
+
+    void mouseDown (const juce::MouseEvent&) override
+    {
+        if (onClick != nullptr)
+            onClick();
+    }
+
+private:
+    juce::Colour swatchColour { DrizzleTheme::accent() };
+};
+
+class TrackColourPickerContent final : public juce::Component,
+                                       private juce::ChangeListener
+{
+public:
+    TrackColourPickerContent (juce::Colour initialColour,
+                              std::function<void (juce::Colour)> onColourChangedIn)
+        : onColourChanged (std::move (onColourChangedIn))
+    {
+        colourSelector.setCurrentColour (initialColour);
+        colourSelector.addChangeListener (this);
+        addAndMakeVisible (colourSelector);
+        setSize (300, 320);
+    }
+
+    void resized() override
+    {
+        colourSelector.setBounds (getLocalBounds());
+    }
+
+private:
+    void changeListenerCallback (juce::ChangeBroadcaster*) override
+    {
+        if (onColourChanged != nullptr)
+            onColourChanged (colourSelector.getCurrentColour());
+    }
+
+    juce::ColourSelector colourSelector;
+    std::function<void (juce::Colour)> onColourChanged;
+};
+
 class TrackMixerPanel::TracksListContent final : public juce::Component
 {
 public:
@@ -173,6 +248,22 @@ private:
 class TrackMixerPanel::TrackRowComponent final : public juce::Component
 {
 public:
+    bool isInteractiveHit (juce::Point<int> pos) const
+    {
+        const juce::Component* interactive[] {
+            &removeButton, &inputButton, &soloButton, &muteButton,
+            &panSlider, &faderSlider, &colourButton, &nameLabel
+        };
+
+        for (const auto* component : interactive)
+        {
+            if (component->isVisible() && component->getBounds().contains (pos))
+                return true;
+        }
+
+        return false;
+    }
+
     TrackRowComponent (TrackMixerPanel& panelIn,
                        AudioEngine& engineIn,
                        MixerFaderLookAndFeel& lafIn,
@@ -206,17 +297,20 @@ public:
         removeButton.setColour (juce::TextButton::textColourOffId, DrizzleTheme::textMuted());
         removeButton.onClick = [this] { panel.confirmRemoveTrack (trackIndex); };
 
+        colourButton.onClick = [this] { panel.showTrackColourPicker (trackIndex, colourButton); };
+
         inputButton.setClickingTogglesState (false);
         inputButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
         inputButton.setColour (juce::TextButton::buttonOnColourId, juce::Colours::transparentBlack);
         inputButton.setColour (juce::TextButton::textColourOffId, DrizzleTheme::textMuted());
         inputButton.onClick = [this] { panel.showInputSelectionForTrack (trackIndex); };
 
-        if (trackIndex == 2)
-        {
-            vstLabel.setText ("VST", juce::dontSendNotification);
-            DrizzleTheme::applyLabel (vstLabel, true);
-        }
+        fxAreaButton.setButtonText ("VST");
+        fxAreaButton.setTooltip (juce::String::fromUTF8 (u8"VST \u3092\u8ffd\u52a0\u30fb\u7de8\u96c6"));
+        fxAreaButton.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+        fxAreaButton.setColour (juce::TextButton::buttonOnColourId, DrizzleTheme::accent().withAlpha (0.15f));
+        fxAreaButton.setColour (juce::TextButton::textColourOffId, DrizzleTheme::textMuted());
+        fxAreaButton.onClick = [this] { panel.showTrackPluginDialog (trackIndex); };
 
         soloButton.onClick = [this]
         {
@@ -244,21 +338,31 @@ public:
         faderSlider.onValueChange = [this]
         {
             panel.commitAllNameEdits();
-            audioEngine.setTrackGain (trackIndex, (float) faderSlider.getValue());
+            const auto gainDb = readSnappedFaderDb (faderSlider);
+            updateFaderWithZeroSnap (faderSlider, gainDb);
+            audioEngine.setTrackGain (trackIndex, gainDb);
         };
 
         addAndMakeVisible (nameLabel);
+        addAndMakeVisible (colourButton);
         addAndMakeVisible (removeButton);
         addAndMakeVisible (inputButton);
         addAndMakeVisible (soloButton);
         addAndMakeVisible (muteButton);
         addAndMakeVisible (panSlider);
         addAndMakeVisible (faderSlider);
-
-        if (trackIndex == 2)
-            addAndMakeVisible (vstLabel);
+        addAndMakeVisible (fxAreaButton);
 
         syncFromEngine();
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu() || e.originalComponent != this)
+            return;
+
+        if (! isInteractiveHit (e.getPosition()))
+            panel.showTrackPluginDialog (trackIndex);
     }
 
     ~TrackRowComponent() override
@@ -268,6 +372,18 @@ public:
 
     void paint (juce::Graphics& g) override
     {
+        const auto panelColour = audioEngine.getTrackPanelColour (trackIndex);
+        const auto panelBounds = getLocalBounds().reduced (4, 2).toFloat();
+
+        g.setColour (panelColour.withAlpha (0.22f));
+        g.fillRoundedRectangle (panelBounds, 8.0f);
+
+        g.setColour (panelColour);
+        g.fillRoundedRectangle (panelBounds.getX(), panelBounds.getY() + 6.0f, 4.0f, panelBounds.getHeight() - 12.0f, 2.0f);
+
+        g.setColour (DrizzleTheme::panelBorder().withAlpha (0.65f));
+        g.drawRoundedRectangle (panelBounds, 8.0f, 1.0f);
+
         auto meterArea = faderSlider.getBounds().translated (-kFaderMeterGap, 0)
                             .withWidth (kFaderMeterWidth)
                             .withHeight (faderSlider.getHeight());
@@ -278,20 +394,22 @@ public:
 
     void resized() override
     {
-        auto bounds = getLocalBounds().reduced (4, 2);
+        auto bounds = getLocalBounds().reduced (10, 8);
 
         auto faderStrip = bounds.removeFromRight (kFaderWidth + kFaderMeterGap + kFaderMeterWidth);
         faderSlider.setBounds (faderStrip.removeFromRight (kFaderWidth));
 
         auto header = bounds.removeFromTop (22);
+        colourButton.setBounds (header.removeFromLeft (20).reduced (1));
+        header.removeFromLeft (4);
         removeButton.setBounds (header.removeFromRight (24).reduced (2));
         nameLabel.setBounds (header);
 
         auto sub = bounds.removeFromTop (18);
-        inputButton.setBounds (sub.removeFromLeft (sub.getWidth() * 2 / 3));
-        vstLabel.setBounds (sub);
+        inputButton.setBounds (sub);
 
         auto controls = bounds.removeFromBottom (26);
+        fxAreaButton.setBounds (bounds.reduced (4));
         soloButton.setBounds (controls.removeFromLeft (26));
         muteButton.setBounds (controls.removeFromLeft (26));
         panSlider.setBounds (controls.removeFromLeft (38).reduced (0, 2));
@@ -307,9 +425,13 @@ public:
         panSlider.setValue (audioEngine.getTrackPan (trackIndex), juce::dontSendNotification);
         soloButton.setToggleState (audioEngine.getTrackSolo (trackIndex), juce::dontSendNotification);
         muteButton.setToggleState (audioEngine.getTrackMute (trackIndex), juce::dontSendNotification);
+        colourButton.setColour (audioEngine.getTrackPanelColour (trackIndex));
         panel.updateTrackButtonStyles (*this);
 
         removeButton.setVisible (audioEngine.getNumTracks() > TrackMixerProcessor::minTracks);
+
+        const int numFx = audioEngine.getPluginChain().getNumTrackPlugins (trackIndex);
+        fxAreaButton.setButtonText (numFx > 0 ? "VST " + juce::String (numFx) : "VST");
     }
 
     void setMeterLevel (float level) noexcept { meterLevel = level; }
@@ -318,9 +440,10 @@ public:
     float meterLevel = 0.0f;
 
     juce::Label nameLabel;
+    TrackColourSwatchButton colourButton;
     juce::TextButton removeButton;
     juce::TextButton inputButton;
-    juce::Label vstLabel;
+    juce::TextButton fxAreaButton;
     juce::TextButton soloButton { "S" };
     juce::TextButton muteButton { "M" };
     juce::Slider panSlider;
@@ -356,24 +479,29 @@ TrackMixerPanel::TrackMixerPanel (AudioEngine& engine)
     masterTitle.setText (juce::String::fromUTF8 (u8"\u30e1\u30a4\u30f3\u51fa\u529b"), juce::dontSendNotification);
     DrizzleTheme::applyLabel (masterTitle);
     applyMixerFaderStyle (masterFader, faderLookAndFeel);
-    masterFader.setValue (audioEngine.getMasterGain(), juce::dontSendNotification);
+    masterFader.setValue (audioEngine.getMasterGainDb(), juce::dontSendNotification);
     masterFader.onValueChange = [this]
     {
         commitAllNameEdits();
-        audioEngine.setMasterGain ((float) masterFader.getValue());
+        const auto gainDb = readSnappedFaderDb (masterFader);
+        updateFaderWithZeroSnap (masterFader, gainDb);
+        audioEngine.setMasterGainDb (gainDb);
     };
     masterMuteButton.setClickingTogglesState (true);
     masterMuteButton.onClick = [this]
     {
         commitAllNameEdits();
         audioEngine.setMasterMute (masterMuteButton.getToggleState());
+        updateMasterButtonStyles();
     };
     masterMonoButton.setClickingTogglesState (true);
     masterMonoButton.onClick = [this]
     {
         commitAllNameEdits();
         audioEngine.setMasterMono (masterMonoButton.getToggleState());
+        updateMasterButtonStyles();
     };
+    updateMasterButtonStyles();
 
     addAndMakeVisible (tracksViewport);
     addAndMakeVisible (addTrackButton);
@@ -418,7 +546,12 @@ void TrackMixerPanel::rebuildTrackList()
 void TrackMixerPanel::layoutTracksList()
 {
     for (int i = 0; i < trackRows.size(); ++i)
-        trackRows.getUnchecked (i)->setBounds (0, i * kTrackRowHeight, tracksListContent->getWidth(), kTrackRowHeight);
+    {
+        trackRows.getUnchecked (i)->setBounds (0,
+                                               i * kTrackRowHeight,
+                                               tracksListContent->getWidth(),
+                                               kTrackRowContentHeight);
+    }
 
     tracksListContent->setSize (tracksListContent->getWidth(), tracksListContent->getContentHeight());
 }
@@ -453,6 +586,12 @@ void TrackMixerPanel::updateTrackButtonStyles (TrackRowComponent& row)
                                           true);
 }
 
+void TrackMixerPanel::updateMasterButtonStyles()
+{
+    DrizzleTheme::applyTrackToggleButton (masterMuteButton, audioEngine.getMasterMute(), true);
+    DrizzleTheme::applyTrackToggleButton (masterMonoButton, audioEngine.getMasterMono(), false);
+}
+
 void TrackMixerPanel::reloadFromEngine()
 {
     rebuildTrackList();
@@ -464,10 +603,30 @@ void TrackMixerPanel::syncUIFromEngine()
     for (auto* row : trackRows)
         row->syncFromEngine();
 
-    masterFader.setValue (audioEngine.getMasterGain(), juce::dontSendNotification);
+    masterFader.setValue (audioEngine.getMasterGainDb(), juce::dontSendNotification);
     masterMuteButton.setToggleState (audioEngine.getMasterMute(), juce::dontSendNotification);
     masterMonoButton.setToggleState (audioEngine.getMasterMono(), juce::dontSendNotification);
+    updateMasterButtonStyles();
     updateAddTrackButton();
+}
+
+void TrackMixerPanel::showTrackColourPicker (int trackIndex, juce::Component& anchor)
+{
+    const auto initialColour = audioEngine.getTrackPanelColour (trackIndex);
+
+    auto picker = std::make_unique<TrackColourPickerContent> (initialColour,
+                                                              [this, trackIndex] (juce::Colour colour)
+                                                              {
+                                                                  audioEngine.setTrackPanelColour (trackIndex, colour);
+
+                                                                  if (juce::isPositiveAndBelow (trackIndex, trackRows.size()))
+                                                                  {
+                                                                      trackRows.getUnchecked (trackIndex)->syncFromEngine();
+                                                                      trackRows.getUnchecked (trackIndex)->repaint();
+                                                                  }
+                                                              });
+
+    juce::CallOutBox::launchAsynchronously (std::move (picker), anchor.getScreenBounds(), nullptr);
 }
 
 void TrackMixerPanel::confirmRemoveTrack (int trackIndex)
@@ -509,13 +668,57 @@ void TrackMixerPanel::showInputSelectionForTrack (int trackIndex)
     options.launchAsync();
 }
 
+void TrackMixerPanel::showTrackPluginDialog (int trackIndex)
+{
+    commitAllNameEdits();
+
+    struct DialogHolder final : public juce::Component
+    {
+        explicit DialogHolder (std::unique_ptr<TrackPluginPanel> contentIn)
+            : content (std::move (contentIn))
+        {
+            addAndMakeVisible (*content);
+        }
+
+        void resized() override
+        {
+            if (content != nullptr)
+                content->setBounds (getLocalBounds());
+        }
+
+        std::unique_ptr<TrackPluginPanel> content;
+    };
+
+    auto* window = new juce::DialogWindow (juce::String::fromUTF8 (u8"\u30c8\u30e9\u30c3\u30af VST"),
+                                           DrizzleTheme::panelBackground(),
+                                           true);
+
+    auto panel = std::make_unique<TrackPluginPanel> (audioEngine,
+                                                     trackIndex,
+                                                     [window, this]
+                                                     {
+                                                         audioEngine.getPluginChain().getTrackPluginManager().hideAllEditors();
+                                                         window->exitModalState (0);
+                                                         delete window;
+                                                         syncUIFromEngine();
+                                                     });
+
+    window->setContentOwned (new DialogHolder (std::move (panel)), true);
+    window->centreWithSize (720, 520);
+    window->enterModalState (true, nullptr, false);
+}
+
 void TrackMixerPanel::timerCallback()
 {
     for (auto* row : trackRows)
         row->setMeterLevel (audioEngine.getTrackPeakLevel (row->trackIndex));
 
+    masterLevel = audioEngine.getMasterPeakLevel();
+
     for (auto* row : trackRows)
         row->repaint();
+
+    repaint();
 }
 
 void TrackMixerPanel::paint (juce::Graphics& g)
@@ -525,7 +728,7 @@ void TrackMixerPanel::paint (juce::Graphics& g)
 
     auto masterMeter = masterFader.getBounds().translated (-kFaderMeterGap, 0).withWidth (kFaderMeterWidth);
     if (! masterMeter.isEmpty())
-        paintVerticalMeter (g, masterMeter, 0.6f);
+        paintVerticalMeter (g, masterMeter, masterLevel);
 }
 
 void TrackMixerPanel::resized()
@@ -552,13 +755,31 @@ void TrackMixerPanel::resized()
 }
 
 //==============================================================================
-StreamPreviewPanel::StreamPreviewPanel()
+StreamPreviewPanel::StreamPreviewPanel (AudioEngine& engine)
+    : audioEngine (engine)
 {
-    startTimerHz (4);
+    audioEngine.getStreamEngine().addChangeListener (this);
+    audioEngine.getYoutubeChatClient().addChangeListener (this);
+
+    youtubeLiveLink.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    youtubeLiveLink.setColour (juce::TextButton::buttonOnColourId, juce::Colours::transparentBlack);
+    youtubeLiveLink.setColour (juce::TextButton::textColourOffId, DrizzleTheme::accent());
+    youtubeLiveLink.setColour (juce::TextButton::textColourOnId, DrizzleTheme::accent().brighter (0.2f));
+    youtubeLiveLink.onClick = [this]
+    {
+        if (youtubeLiveUrl.isWellFormed())
+            DrizzleTheme::launchUrlInChrome (youtubeLiveUrl);
+    };
+    addAndMakeVisible (youtubeLiveLink);
+
+    updateYoutubeLiveLink();
+    startTimerHz (8);
 }
 
 StreamPreviewPanel::~StreamPreviewPanel()
 {
+    audioEngine.getStreamEngine().removeChangeListener (this);
+    audioEngine.getYoutubeChatClient().removeChangeListener (this);
     stopTimer();
 }
 
@@ -572,55 +793,221 @@ void StreamPreviewPanel::paint (juce::Graphics& g)
     auto preview = content.removeFromTop (content.getHeight() - 36).reduced (2);
     auto meterArea = content;
 
+    const auto& streamEngine = audioEngine.getStreamEngine();
+    const auto state = streamEngine.getState();
+    const bool isLive = state == StreamState::live || state == StreamState::starting;
+    const auto title = streamEngine.getConfig().title;
+
     g.setColour (juce::Colour (0xff2b3140));
     g.fillRoundedRectangle (preview.toFloat(), 6.0f);
 
     g.setColour (DrizzleTheme::textMuted());
     g.setFont (juce::FontOptions { 22.0f }.withStyle ("Bold"));
-    g.drawText ("Drizzle LIVE STREAMING", preview, juce::Justification::centred);
+    g.drawText (title.isNotEmpty() ? title : juce::String ("Drizzle LIVE STREAMING"),
+                preview,
+                juce::Justification::centred);
 
-    g.setColour (DrizzleTheme::accentRed());
-    g.fillEllipse (preview.getRight() - 120.0f, preview.getY() + 12.0f, 10.0f, 10.0f);
-    g.setColour (DrizzleTheme::textPrimary());
-    g.setFont (juce::FontOptions { 14.0f }.withStyle ("Bold"));
-    g.drawText ("LIVE  " + liveTimer, preview.removeFromTop (36).removeFromRight (140),
-                juce::Justification::centredRight);
+    if (isLive)
+    {
+        g.setColour (DrizzleTheme::accentRed());
+        g.fillEllipse (preview.getRight() - 120.0f, preview.getY() + 12.0f, 10.0f, 10.0f);
+        g.setColour (DrizzleTheme::textPrimary());
+        g.setFont (juce::FontOptions { 14.0f }.withStyle ("Bold"));
+        g.drawText ("LIVE  " + liveTimer, preview.removeFromTop (36).removeFromRight (140),
+                    juce::Justification::centredRight);
+    }
 
     paintHorizontalMeter (g, meterArea, masterLevel);
     g.setColour (DrizzleTheme::textMuted());
-    g.drawText ("-6.2 dB", meterArea.removeFromRight (56), juce::Justification::centredRight);
+    const auto dbText = masterLevel > 0.0001f
+                          ? juce::String (MixerDbScale::linearToDb (masterLevel), 1) + " dB"
+                          : juce::String::fromUTF8 (u8"-inf dB");
+    g.drawText (dbText, meterArea.removeFromRight (56), juce::Justification::centredRight);
 }
 
-void StreamPreviewPanel::resized() {}
+void StreamPreviewPanel::resized()
+{
+    auto header = getLocalBounds().reduced (8).removeFromTop (28);
+    header.removeFromLeft (juce::roundToInt ((float) header.getWidth() * 0.45f));
+    youtubeLiveLink.setBounds (header.reduced (4, 2));
+}
 
 void StreamPreviewPanel::timerCallback()
 {
-    masterLevel = 0.35f + 0.25f * std::sin ((float) juce::Time::getMillisecondCounterHiRes() * 0.002f);
+    const auto& streamEngine = audioEngine.getStreamEngine();
+    masterLevel = streamEngine.getState() == StreamState::live
+                    ? streamEngine.getOutputPeakLevel()
+                    : audioEngine.getMasterPeakLevel();
+    liveTimer = formatLiveDuration (streamEngine.getLiveDurationSeconds());
+    updateYoutubeLiveLink();
     repaint();
 }
 
+void StreamPreviewPanel::changeListenerCallback (juce::ChangeBroadcaster*)
+{
+    updateYoutubeLiveLink();
+    repaint();
+}
+
+void StreamPreviewPanel::updateYoutubeLiveLink()
+{
+    const auto& streamEngine = audioEngine.getStreamEngine();
+    const auto state = streamEngine.getState();
+    const bool isLive = state == StreamState::live || state == StreamState::starting;
+
+    if (! isLive)
+    {
+        youtubeLiveUrl = {};
+        youtubeLiveLink.setVisible (false);
+        return;
+    }
+
+    const auto& chatClient = audioEngine.getYoutubeChatClient();
+    auto urlString = chatClient.getLiveStudioUrl();
+
+    if (urlString.isEmpty())
+        urlString = chatClient.getLiveWatchUrl();
+
+    if (urlString.isEmpty())
+        urlString = "https://studio.youtube.com/";
+
+    youtubeLiveUrl = juce::URL (urlString);
+    youtubeLiveLink.setVisible (true);
+}
+
 //==============================================================================
-StreamSettingsPanel::StreamSettingsPanel()
+StreamSettingsPanel::StreamSettingsPanel (AudioEngine& engine)
+    : audioEngine (engine)
 {
     serviceLabel.setText (juce::String::fromUTF8 (u8"\u914d\u4fe1\u30b5\u30fc\u30d3\u30b9"), juce::dontSendNotification);
     titleLabel.setText (juce::String::fromUTF8 (u8"\u30bf\u30a4\u30c8\u30eb"), juce::dontSendNotification);
+    streamKeyLabel.setText (juce::String::fromUTF8 (u8"\u30b9\u30c8\u30ea\u30fc\u30e0\u30ad\u30fc"
+                                                    u8" (YouTube Studio \u306e\u30ad\u30fc\u306e\u307f)"),
+                            juce::dontSendNotification);
     DrizzleTheme::applyLabel (serviceLabel);
     DrizzleTheme::applyLabel (titleLabel);
+    DrizzleTheme::applyLabel (streamKeyLabel);
 
     serviceBox.addItem ("YouTube Live", 1);
     serviceBox.setSelectedId (1, juce::dontSendNotification);
 
     titleEditor.setMultiLine (false);
-    titleEditor.setText (juce::String::fromUTF8 (u8"\u5f39\u304d\u8a9e\u308a\u30e9\u30a4\u30d6\u914d\u4fe1"));
+    streamKeyEditor.setMultiLine (false);
+    streamKeyEditor.setPasswordCharacter ((juce::juce_wchar) 0x2022);
+    streamKeyEditor.setTextToShowWhenEmpty (juce::String::fromUTF8 (u8"xxxx-xxxx-xxxx-xxxx"),
+                                            DrizzleTheme::textMuted());
 
     streamButton.setColour (juce::TextButton::buttonColourId, DrizzleTheme::accentRed());
+
+    testButton.onClick = [this] { onTestClicked(); };
+    streamButton.onClick = [this] { onStreamClicked(); };
+    titleEditor.onFocusLost = [this] { applyConfigFromUI(); };
+    titleEditor.onReturnKey = [this] { applyConfigFromUI(); };
+    streamKeyEditor.onFocusLost = [this] { applyConfigFromUI(); };
+    streamKeyEditor.onReturnKey = [this] { applyConfigFromUI(); };
+    serviceBox.onChange = [this] { applyConfigFromUI(); };
 
     addAndMakeVisible (serviceLabel);
     addAndMakeVisible (serviceBox);
     addAndMakeVisible (titleLabel);
     addAndMakeVisible (titleEditor);
+    addAndMakeVisible (streamKeyLabel);
+    addAndMakeVisible (streamKeyEditor);
     addAndMakeVisible (testButton);
     addAndMakeVisible (streamButton);
+
+    audioEngine.getStreamEngine().addChangeListener (this);
+    reloadFromEngine();
+}
+
+StreamSettingsPanel::~StreamSettingsPanel()
+{
+    audioEngine.getStreamEngine().removeChangeListener (this);
+}
+
+void StreamSettingsPanel::reloadFromEngine()
+{
+    const auto config = audioEngine.getStreamEngine().getConfig();
+    titleEditor.setText (config.title, juce::dontSendNotification);
+    streamKeyEditor.setText (config.streamKey, juce::dontSendNotification);
+    serviceBox.setSelectedId (config.serviceId > 0 ? config.serviceId : 1, juce::dontSendNotification);
+    updateStreamButton();
+}
+
+void StreamSettingsPanel::prepareForShutdown()
+{
+    applyConfigFromUI();
+}
+
+void StreamSettingsPanel::applyConfigFromUI()
+{
+    StreamConfig config;
+    config.title = titleEditor.getText().trim();
+    config.streamKey = streamKeyEditor.getText().trim();
+    config.serviceId = serviceBox.getSelectedId();
+    audioEngine.getStreamEngine().setConfig (config);
+    audioEngine.saveSessionSettings();
+}
+
+void StreamSettingsPanel::updateStreamButton()
+{
+    const auto state = audioEngine.getStreamEngine().getState();
+    const bool streaming = state == StreamState::live || state == StreamState::starting;
+
+    streamButton.setButtonText (streaming
+                                    ? juce::String::fromUTF8 (u8"\u914d\u4fe1\u505c\u6b62")
+                                    : juce::String::fromUTF8 (u8"\u914d\u4fe1\u958b\u59cb"));
+    streamButton.setEnabled (state != StreamState::stopping);
+    testButton.setEnabled (! streaming);
+    titleEditor.setReadOnly (streaming);
+    streamKeyEditor.setReadOnly (streaming);
+    serviceBox.setEnabled (! streaming);
+}
+
+void StreamSettingsPanel::onTestClicked()
+{
+    applyConfigFromUI();
+
+    if (audioEngine.getStreamEngine().testConnection())
+    {
+        juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon,
+                                                    juce::String::fromUTF8 (u8"\u63a5\u7d9a\u30c6\u30b9\u30c8"),
+                                                    juce::String::fromUTF8 (u8"FFmpeg \u3068\u30b9\u30c8\u30ea\u30fc\u30e0\u30ad\u30fc\u306e\u78ba\u8a8d\u304c\u5b8c\u4e86\u3057\u307e\u3057\u305f\u3002"));
+    }
+    else
+    {
+        juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                    juce::String::fromUTF8 (u8"\u63a5\u7d9a\u30c6\u30b9\u30c8"),
+                                                    audioEngine.getStreamEngine().getLastError());
+    }
+}
+
+void StreamSettingsPanel::onStreamClicked()
+{
+    applyConfigFromUI();
+
+    auto& streamEngine = audioEngine.getStreamEngine();
+    const auto state = streamEngine.getState();
+
+    if (state == StreamState::live || state == StreamState::starting)
+    {
+        audioEngine.stopStreaming();
+        return;
+    }
+
+    audioEngine.getYoutubeChatClient().setActiveStreamKey (streamEngine.getConfig().streamKey);
+
+    if (! streamEngine.startStream())
+    {
+        juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                    juce::String::fromUTF8 (u8"\u914d\u4fe1\u958b\u59cb"),
+                                                    streamEngine.getLastError());
+    }
+}
+
+void StreamSettingsPanel::changeListenerCallback (juce::ChangeBroadcaster*)
+{
+    updateStreamButton();
 }
 
 void StreamSettingsPanel::paint (juce::Graphics& g)
@@ -682,29 +1069,175 @@ void StreamSettingsPanel::resized()
     left.removeFromTop (8);
     titleLabel.setBounds (left.removeFromTop (20));
     titleEditor.setBounds (left.removeFromTop (28));
+    left.removeFromTop (8);
+    streamKeyLabel.setBounds (left.removeFromTop (20));
+    streamKeyEditor.setBounds (left.removeFromTop (28));
     left.removeFromTop (12);
     testButton.setBounds (left.removeFromTop (30));
     streamButton.setBounds (left.removeFromBottom (40));
 }
 
 //==============================================================================
-CommentPanel::CommentPanel()
+namespace
+{
+class YoutubeConnectDialog final : public juce::Component
+{
+public:
+    YoutubeConnectDialog (YoutubeChatClient& chatClientIn, std::function<void()> onCloseIn)
+        : chatClient (chatClientIn),
+          onClose (std::move (onCloseIn))
+    {
+        setSize (460, 280);
+
+        titleLabel.setText (juce::String::fromUTF8 (u8"YouTube \u30b3\u30e1\u30f3\u30c8\u9023\u643a\u8a2d\u5b9a"),
+                            juce::dontSendNotification);
+        DrizzleTheme::applyLabel (titleLabel);
+
+        helpLabel.setText (
+            juce::String::fromUTF8 (
+                u8"Google Cloud \u3067 YouTube Data API v3 \u3092\u6709\u52b9\u5316\u3057\u3001"
+                u8"OAuth \u30af\u30e9\u30a4\u30a2\u30f3\u30c8\uff08\u30a6\u30a7\u30d6\u30a2\u30d7\u30ea\uff09\u3092\u4f5c\u6210\u3057\u3066\u304f\u3060\u3055\u3044\u3002\n"
+                u8"\u627f\u8a8d\u30ea\u30c0\u30a4\u30ec\u30af\u30c8 URI: http://127.0.0.1:8765/\n"
+                u8"OAuth \u540c\u610f\u753b\u9762\u3067\u30c6\u30b9\u30c8\u30e6\u30fc\u30b6\u30fc\u306b\u81ea\u5206\u306e Gmail \u3092\u8ffd\u52a0\u3057\u3066\u304f\u3060\u3055\u3044\u3002"),
+            juce::dontSendNotification);
+        helpLabel.setJustificationType (juce::Justification::topLeft);
+        DrizzleTheme::applyLabel (helpLabel, true);
+
+        clientIdLabel.setText ("Client ID", juce::dontSendNotification);
+        clientSecretLabel.setText ("Client Secret", juce::dontSendNotification);
+        DrizzleTheme::applyLabel (clientIdLabel);
+        DrizzleTheme::applyLabel (clientSecretLabel);
+
+        const auto config = chatClient.getApiConfig();
+        clientIdEditor.setText (config.clientId);
+        clientSecretEditor.setText (config.clientSecret);
+        clientSecretEditor.setPasswordCharacter ((juce::juce_wchar) 0x2022);
+
+        connectButton.setButtonText (juce::String::fromUTF8 (u8"Google\u30a2\u30ab\u30a6\u30f3\u30c8\u9023\u643a"));
+        cancelButton.setButtonText (juce::String::fromUTF8 (u8"\u9589\u3058\u308b"));
+
+        connectButton.onClick = [this] { onConnectClicked(); };
+        cancelButton.onClick = [this]
+        {
+            if (onClose != nullptr)
+                onClose();
+        };
+
+        addAndMakeVisible (titleLabel);
+        addAndMakeVisible (helpLabel);
+        addAndMakeVisible (clientIdLabel);
+        addAndMakeVisible (clientIdEditor);
+        addAndMakeVisible (clientSecretLabel);
+        addAndMakeVisible (clientSecretEditor);
+        addAndMakeVisible (connectButton);
+        addAndMakeVisible (cancelButton);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (16);
+        titleLabel.setBounds (area.removeFromTop (24));
+        helpLabel.setBounds (area.removeFromTop (56));
+        area.removeFromTop (8);
+        clientIdLabel.setBounds (area.removeFromTop (18));
+        clientIdEditor.setBounds (area.removeFromTop (28));
+        area.removeFromTop (6);
+        clientSecretLabel.setBounds (area.removeFromTop (18));
+        clientSecretEditor.setBounds (area.removeFromTop (28));
+        area.removeFromTop (12);
+        auto buttons = area.removeFromTop (30);
+        cancelButton.setBounds (buttons.removeFromRight (90));
+        connectButton.setBounds (buttons.removeFromRight (160));
+    }
+
+private:
+    void onConnectClicked()
+    {
+        YoutubeApiConfig config;
+        config.clientId = clientIdEditor.getText().trim();
+        config.clientSecret = clientSecretEditor.getText().trim();
+        config.redirectPort = 8765;
+        chatClient.setApiConfig (config);
+
+        connectButton.setEnabled (false);
+
+        chatClient.beginOAuthFlow ([this] (bool success, const juce::String& message)
+        {
+            connectButton.setEnabled (true);
+
+            if (! success)
+            {
+                juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+                                                            juce::String::fromUTF8 (u8"YouTube \u9023\u643a"),
+                                                            message);
+                return;
+            }
+
+            juce::NativeMessageBox::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon,
+                                                        juce::String::fromUTF8 (u8"YouTube \u9023\u643a"),
+                                                        juce::String::fromUTF8 (u8"\u9023\u643a\u304c\u5b8c\u4e86\u3057\u307e\u3057\u305f\u3002"));
+
+            if (onClose != nullptr)
+                onClose();
+        });
+    }
+
+    YoutubeChatClient& chatClient;
+    std::function<void()> onClose;
+    juce::Label titleLabel;
+    juce::Label helpLabel;
+    juce::Label clientIdLabel;
+    juce::TextEditor clientIdEditor;
+    juce::Label clientSecretLabel;
+    juce::TextEditor clientSecretEditor;
+    juce::TextButton connectButton;
+    juce::TextButton cancelButton;
+};
+} // namespace
+
+CommentPanel::CommentPanel (AudioEngine& engine)
+    : audioEngine (engine)
 {
     commentDisplay.setMultiLine (true);
     commentDisplay.setReadOnly (true);
-    commentDisplay.setText (
-        "Yuki: " + juce::String::fromUTF8 (u8"\u3044\u3044\u97f3\u3059\u304d\u3067\u3059\u306d\uff01") + "\n"
-        "Taro: " + juce::String::fromUTF8 (u8"\u30ea\u30af\u30a8\u30b9\u30c8\u3042\u308a\u304c\u3068\u3046\u3054\u3056\u3044\u307e\u3059") + "\n"
-        "Mika: " + juce::String::fromUTF8 (u8"\u30ae\u30bf\u306e\u97f3\u8272\u304c\u304d\u308c\u3044") + "\n");
+    commentDisplay.setScrollbarsShown (true);
+    commentDisplay.setFont (juce::FontOptions { 13.0f });
 
-    viewerLabel.setText (juce::String::fromUTF8 (u8"\u8996\u8074\u8005\u6570: 128"), juce::dontSendNotification);
     DrizzleTheme::applyLabel (viewerLabel, true);
+    DrizzleTheme::applyLabel (statusLabel, true);
     commentInput.setTextToShowWhenEmpty (juce::String::fromUTF8 (u8"\u30e1\u30c3\u30bb\u30fc\u30b8\u3092\u5165\u529b..."), DrizzleTheme::textMuted());
 
+    sendButton.onClick = [this] { onSendClicked(); };
+    authButton.onClick = [this] { onAuthClicked(); };
+    commentInput.onReturnKey = [this] { onSendClicked(); };
+
+    addAndMakeVisible (authButton);
     addAndMakeVisible (commentDisplay);
     addAndMakeVisible (commentInput);
     addAndMakeVisible (sendButton);
     addAndMakeVisible (viewerLabel);
+    addAndMakeVisible (statusLabel);
+
+    audioEngine.getYoutubeChatClient().addChangeListener (this);
+    audioEngine.getStreamEngine().addChangeListener (this);
+
+    refreshComments();
+    updateViewerLabel();
+    updateAuthButton();
+    syncChatPollingWithStream();
+    startTimerHz (2);
+}
+
+CommentPanel::~CommentPanel()
+{
+    audioEngine.getYoutubeChatClient().removeChangeListener (this);
+    audioEngine.getStreamEngine().removeChangeListener (this);
+    stopTimer();
+}
+
+void CommentPanel::prepareForShutdown()
+{
+    audioEngine.getYoutubeChatClient().stopPolling();
 }
 
 void CommentPanel::paint (juce::Graphics& g)
@@ -716,6 +1249,11 @@ void CommentPanel::resized()
 {
     auto area = getLocalBounds().reduced (8);
     area.removeFromTop (28);
+
+    auto header = area.removeFromTop (28);
+    authButton.setBounds (header.removeFromRight (110).reduced (0, 2));
+    statusLabel.setBounds (header.reduced (0, 4));
+
     viewerLabel.setBounds (area.removeFromBottom (22));
     auto inputRow = area.removeFromBottom (34);
     sendButton.setBounds (inputRow.removeFromRight (64));
@@ -723,15 +1261,221 @@ void CommentPanel::resized()
     commentDisplay.setBounds (area.reduced (2));
 }
 
-//==============================================================================
-StatusBarComponent::StatusBarComponent()
+void CommentPanel::timerCallback()
 {
-    statusLabel.setText (juce::String::fromUTF8 (u8"\u6e96\u5099\u5b8c\u4e86"), juce::dontSendNotification);
-    statsLabel.setText ("Drop 0 (0.0%)   Frame 6012 (0.0%)", juce::dontSendNotification);
-    DrizzleTheme::applyLabel (statusLabel);
+    updateViewerLabel();
+    syncChatPollingWithStream();
+}
+
+void CommentPanel::changeListenerCallback (juce::ChangeBroadcaster* source)
+{
+    if (source == &audioEngine.getYoutubeChatClient())
+    {
+        refreshComments();
+        updateViewerLabel();
+        updateAuthButton();
+        statusLabel.setText (audioEngine.getYoutubeChatClient().getStatusText(), juce::dontSendNotification);
+    }
+
+    if (source == &audioEngine.getStreamEngine())
+    {
+        syncChatPollingWithStream();
+        refreshComments();
+    }
+}
+
+void CommentPanel::refreshComments()
+{
+    juce::String text;
+    const auto messages = audioEngine.getYoutubeChatClient().getMessages();
+
+    for (const auto& message : messages)
+    {
+        if (text.isNotEmpty())
+            text += "\n";
+
+        text += message.author + ": " + message.text;
+    }
+
+    if (text.isEmpty())
+    {
+        const auto& chatClient = audioEngine.getYoutubeChatClient();
+        const auto streamState = audioEngine.getStreamEngine().getState();
+        const bool streaming = streamState == StreamState::live || streamState == StreamState::starting;
+
+        if (! chatClient.isAuthenticated())
+        {
+            text = juce::String::fromUTF8 (u8"YouTube \u9023\u643a\u30dc\u30bf\u30f3\u304b\u3089\u30a2\u30ab\u30a6\u30f3\u30c8\u3092\u9023\u643a\u3057\u3066\u304f\u3060\u3055\u3044\u3002");
+        }
+        else if (! streaming)
+        {
+            text = juce::String::fromUTF8 (u8"\u914d\u4fe1\u3057\u3066\u3044\u307e\u305b\u3093\u3002");
+        }
+        else
+        {
+            const auto status = chatClient.getStatusText();
+
+            text = status.isNotEmpty()
+
+                       ? status
+
+                       : juce::String::fromUTF8 (u8"\u30e9\u30a4\u30d6\u30c1\u30e3\u30c3\u30c8\u63a5\u7d9a\u3092\u5f85\u6a5f\u4e2d...");
+        }
+    }
+
+    if (commentDisplay.getText() != text)
+    {
+        commentDisplay.setText (text);
+        commentDisplay.moveCaretToEnd();
+    }
+}
+
+void CommentPanel::updateViewerLabel()
+{
+    const int viewers = audioEngine.getYoutubeChatClient().getConcurrentViewers();
+    viewerLabel.setText (juce::String::fromUTF8 (u8"\u8996\u8074\u8005\u6570: ") + juce::String (viewers),
+                         juce::dontSendNotification);
+}
+
+void CommentPanel::updateAuthButton()
+{
+    authButton.setButtonText (audioEngine.getYoutubeChatClient().isAuthenticated()
+                                  ? juce::String::fromUTF8 (u8"\u9023\u643a\u89e3\u9664")
+                                  : juce::String::fromUTF8 (u8"YouTube\u9023\u643a"));
+}
+
+void CommentPanel::syncChatPollingWithStream()
+{
+    auto& chatClient = audioEngine.getYoutubeChatClient();
+    auto& streamEngine = audioEngine.getStreamEngine();
+    const auto streamState = streamEngine.getState();
+    const bool isLive = streamState == StreamState::live;
+    const bool shouldPoll = chatClient.isAuthenticated() && isLive;
+
+    if (shouldPoll && ! chatClient.isPolling())
+        chatClient.startPolling();
+    else if (! shouldPoll && chatClient.isPolling())
+        chatClient.stopPolling();
+}
+
+void CommentPanel::onSendClicked()
+{
+    const auto text = commentInput.getText().trim();
+
+    if (text.isEmpty())
+        return;
+
+    if (! audioEngine.getYoutubeChatClient().isAuthenticated())
+    {
+        showConnectDialog();
+        return;
+    }
+
+    audioEngine.getYoutubeChatClient().sendChatMessage (text);
+    commentInput.clear();
+}
+
+void CommentPanel::onAuthClicked()
+{
+    if (audioEngine.getYoutubeChatClient().isAuthenticated())
+    {
+        juce::NativeMessageBox::showOkCancelBox (juce::MessageBoxIconType::QuestionIcon,
+                                                 juce::String::fromUTF8 (u8"YouTube \u9023\u643a\u89e3\u9664"),
+                                                 juce::String::fromUTF8 (u8"YouTube \u30a2\u30ab\u30a6\u30f3\u30c8\u9023\u643a\u3092\u89e3\u9664\u3057\u307e\u3059\u304b\uff1f"),
+                                                 this,
+                                                 juce::ModalCallbackFunction::create ([this] (int result)
+        {
+            if (result != 0)
+                audioEngine.getYoutubeChatClient().disconnectAccount();
+        }));
+
+        return;
+    }
+
+    showConnectDialog();
+}
+
+void CommentPanel::showConnectDialog()
+{
+    struct DialogHolder : public juce::Component
+    {
+        explicit DialogHolder (std::unique_ptr<YoutubeConnectDialog> contentIn)
+            : content (std::move (contentIn))
+        {
+            addAndMakeVisible (*content);
+        }
+
+        void resized() override
+        {
+            if (content != nullptr)
+                content->setBounds (getLocalBounds());
+        }
+
+        std::unique_ptr<YoutubeConnectDialog> content;
+    };
+
+    auto* window = new juce::DialogWindow (juce::String::fromUTF8 (u8"YouTube \u30b3\u30e1\u30f3\u30c8\u9023\u643a"),
+                                           DrizzleTheme::panelBackground(),
+                                           true);
+
+    auto dialog = std::make_unique<YoutubeConnectDialog> (audioEngine.getYoutubeChatClient(),
+                                                          [window]
+                                                          {
+                                                              window->exitModalState (0);
+                                                          });
+    auto* dialogPtr = dialog.get();
+    window->setContentOwned (new DialogHolder (std::move (dialog)), true);
+    window->centreWithSize (dialogPtr->getWidth(), dialogPtr->getHeight());
+    window->enterModalState (true, nullptr, true);
+}
+
+//==============================================================================
+StatusBarComponent::StatusBarComponent (AudioEngine& engine)
+    : audioEngine (engine)
+{
+    statusDisplay.setMultiLine (true);
+    statusDisplay.setReadOnly (true);
+    statusDisplay.setScrollbarsShown (true);
+    statusDisplay.setCaretVisible (false);
+    statusDisplay.setFont (juce::FontOptions { 12.0f });
+    statusDisplay.setColour (juce::TextEditor::backgroundColourId,
+                             DrizzleTheme::panelBackground().darker (0.2f));
+    statusDisplay.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+    statusDisplay.setColour (juce::TextEditor::textColourId, DrizzleTheme::textPrimary());
+
     DrizzleTheme::applyLabel (statsLabel, true);
-    addAndMakeVisible (statusLabel);
+    addAndMakeVisible (statusDisplay);
     addAndMakeVisible (statsLabel);
+    timerCallback();
+    startTimerHz (2);
+}
+
+void StatusBarComponent::timerCallback()
+{
+    const auto& streamEngine = audioEngine.getStreamEngine();
+    juce::String statusText = streamEngine.getStatusText();
+
+    if (streamEngine.getState() == StreamState::error)
+    {
+        const auto errorText = streamEngine.getLastError();
+
+        if (errorText.isNotEmpty())
+            statusText = errorText;
+    }
+
+    if (! DrizzleVst3Host::isLicenseCompatProcess())
+    {
+        statusText = juce::String::fromUTF8 (u8"[\u30e9\u30a4\u30bb\u30f3\u30xb9] reaper.exe \u304b\u3089\u8d77\u52d5\u3057\u3066\u304f\u3060\u3055\u3044 \u2014 ")
+                   + statusText;
+    }
+
+    if (statusDisplay.getText() != statusText)
+        statusDisplay.setText (statusText);
+
+    const int drops = streamEngine.getUnderrunCount();
+    statsLabel.setText ("Drop " + juce::String (drops)
+                        + juce::String::fromUTF8 (u8"   \u30d5\u30ec\u30fc\u30e0 30 fps"),
+                        juce::dontSendNotification);
 }
 
 void StatusBarComponent::paint (juce::Graphics& g)
@@ -744,9 +1488,10 @@ void StatusBarComponent::paint (juce::Graphics& g)
 
 void StatusBarComponent::resized()
 {
-    auto area = getLocalBounds().reduced (10, 4);
-    statusLabel.setBounds (area.removeFromLeft (area.getWidth() / 2));
-    statsLabel.setBounds (area);
+    auto area = getLocalBounds().reduced (8, 4);
+    auto header = area.removeFromTop (18);
+    statsLabel.setBounds (header.removeFromRight (juce::jmin (header.getWidth(), 280)));
+    statusDisplay.setBounds (area.reduced (0, 2));
 }
 
 //==============================================================================

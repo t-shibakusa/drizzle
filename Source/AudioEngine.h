@@ -2,6 +2,8 @@
 
 #include "PluginChain.h"
 #include "SessionSettings.h"
+#include "StreamEngine.h"
+#include "YoutubeChatClient.h"
 #include <juce_audio_utils/juce_audio_utils.h>
 
 struct AudioInputOption
@@ -22,6 +24,7 @@ public:
 
     void initialise();
     void shutdown();
+    void stopStreaming();
     void saveSettings();
 
     int getNumTracks() const noexcept;
@@ -50,14 +53,19 @@ public:
 
     float getTrackPeakLevel (int trackIndex) const;
 
-    float getMasterGain() const noexcept { return masterGain; }
-    void setMasterGain (float gain);
+    juce::Colour getTrackPanelColour (int trackIndex) const;
+    void setTrackPanelColour (int trackIndex, juce::Colour colour);
+
+    float getMasterGainDb() const noexcept { return masterGainDb; }
+    void setMasterGainDb (float gainDb);
 
     bool getMasterMute() const noexcept { return masterMute; }
     void setMasterMute (bool mute);
 
     bool getMasterMono() const noexcept { return masterMono; }
     void setMasterMono (bool mono);
+
+    float getMasterPeakLevel() const noexcept;
 
     float getPluginGain() const noexcept { return pluginGain; }
     void setPluginGain (float gain);
@@ -69,6 +77,12 @@ public:
     void saveSessionSettings();
     void loadSessionSettings();
 
+    StreamEngine& getStreamEngine() noexcept { return streamEngine; }
+    const StreamEngine& getStreamEngine() const noexcept { return streamEngine; }
+
+    YoutubeChatClient& getYoutubeChatClient() noexcept { return youtubeChatClient; }
+    const YoutubeChatClient& getYoutubeChatClient() const noexcept { return youtubeChatClient; }
+
 private:
     void changeListenerCallback (juce::ChangeBroadcaster* source) override;
     static juce::File getSettingsFile();
@@ -76,16 +90,26 @@ private:
 
     TrackMixerProcessor& getTrackMixer() noexcept;
     const TrackMixerProcessor& getTrackMixer() const noexcept;
+    void applyMasterState();
+    int getActiveInputChannelCount() const noexcept;
+    int getActiveOutputChannelCount() const noexcept;
+    void ensureDeviceChannelsEnabled();
+    void clampTrackInputChannels();
+    void notifyAudioDeviceChanged();
 
     juce::AudioDeviceManager deviceManager;
     juce::AudioProcessorPlayer graphPlayer;
     PluginChain pluginChain;
+    StreamEngine streamEngine;
+    YoutubeChatClient youtubeChatClient;
 
-    float masterGain = 0.85f;
+    float masterGainDb = 0.0f;
     bool masterMute = false;
     bool masterMono = false;
     float pluginGain = 0.5f;
     bool hasShutdown = false;
+    StreamState lastStreamState = StreamState::idle;
+    std::atomic<bool> streamEndInProgress { false };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioEngine)
 };

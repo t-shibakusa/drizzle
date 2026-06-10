@@ -26,10 +26,10 @@ private:
 
     AudioEngine audioEngine;
     TrackMixerPanel trackMixerPanel { audioEngine };
-    StreamPreviewPanel streamPreviewPanel;
-    StreamSettingsPanel streamSettingsPanel;
-    CommentPanel commentPanel;
-    StatusBarComponent statusBar;
+    StreamPreviewPanel streamPreviewPanel { audioEngine };
+    StreamSettingsPanel streamSettingsPanel { audioEngine };
+    CommentPanel commentPanel { audioEngine };
+    StatusBarComponent statusBar { audioEngine };
     SystemMetricsBar systemMetricsBar;
 
     bool shutdownPrepared = false;

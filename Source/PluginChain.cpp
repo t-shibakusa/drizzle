@@ -1,52 +1,9 @@
 #include "PluginChain.h"
-#include "TrackMixerProcessor.h"
-
-class GainAudioProcessor final : public juce::AudioProcessor
-{
-public:
-    GainAudioProcessor()
-        : juce::AudioProcessor (BusesProperties().withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
-                                                   .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
-    {
-    }
-
-    const juce::String getName() const override { return "Gain"; }
-    bool acceptsMidi() const override { return false; }
-    bool producesMidi() const override { return false; }
-    double getTailLengthSeconds() const override { return 0.0; }
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
-    void changeProgramName (int, const juce::String&) override {}
-    bool hasEditor() const override { return false; }
-    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
-    void getStateInformation (juce::MemoryBlock&) override {}
-    void setStateInformation (const void*, int) override {}
-
-    bool isBusesLayoutSupported (const BusesLayout& layouts) const override
-    {
-        return layouts.getMainInputChannelSet() == layouts.getMainOutputChannelSet()
-            && ! layouts.getMainOutputChannelSet().isDisabled();
-    }
-
-    void prepareToPlay (double, int) override {}
-    void releaseResources() override {}
-
-    void processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
-    {
-        buffer.applyGain (gain.load());
-    }
-
-    using juce::AudioProcessor::processBlock;
-
-    std::atomic<float> gain { 1.0f };
-};
+#include "DrizzleAudioProcessor.h"
+#include "Vst3HostIdentity.h"
 
 namespace
 {
-constexpr int numChannels = 2;
-
 bool isWavesShellGateway (const juce::PluginDescription& description)
 {
     return description.name.containsIgnoreCase ("WaveShell");
@@ -62,6 +19,88 @@ bool isUiSelectablePlugin (const juce::PluginDescription& description)
 {
     return ! isWavesShellGateway (description)
         && ! isWavesInternalBundlePath (description);
+}
+
+int getVst3PathPreferenceRank (const juce::String& path)
+{
+    const auto normalised = path.replaceCharacter ('/', '\\').toLowerCase();
+
+    if (normalised.contains ("\\common files\\vst3\\"))
+        return 0;
+
+    if (normalised.contains ("\\programs\\common\\vst3\\"))
+        return 1;
+
+    if (normalised.contains ("\\vstplugins\\")
+        || normalised.contains ("\\steinberg\\vstplugins\\"))
+        return 100;
+
+    return 50;
+}
+
+bool isNonCanonicalVst3Path (const juce::PluginDescription& description)
+{
+    return description.pluginFormatName == "VST3"
+        && getVst3PathPreferenceRank (description.fileOrIdentifier) >= 50;
+}
+
+juce::PluginDescription preferCanonicalPluginDescription (const juce::PluginDescription& description,
+                                                        const juce::KnownPluginList& knownPluginList)
+{
+    if (description.pluginFormatName != "VST3")
+        return description;
+
+    auto best = description;
+    auto bestRank = getVst3PathPreferenceRank (best.fileOrIdentifier);
+
+    for (const auto& type : knownPluginList.getTypes())
+    {
+        if (type.uniqueId != description.uniqueId || type.pluginFormatName != "VST3")
+            continue;
+
+        const auto rank = getVst3PathPreferenceRank (type.fileOrIdentifier);
+
+        if (rank < bestRank)
+        {
+            best = type;
+            bestRank = rank;
+        }
+    }
+
+    return best;
+}
+
+juce::Array<juce::PluginDescription> deduplicatePluginsForUi (const juce::KnownPluginList& knownPluginList)
+{
+    juce::Array<juce::PluginDescription> plugins;
+
+    for (const auto& type : knownPluginList.getTypes())
+    {
+        if (! isUiSelectablePlugin (type))
+            continue;
+
+        bool replaced = false;
+
+        for (int i = 0; i < plugins.size(); ++i)
+        {
+            if (plugins.getReference (i).uniqueId != type.uniqueId)
+                continue;
+
+            const auto existingRank = getVst3PathPreferenceRank (plugins.getReference (i).fileOrIdentifier);
+            const auto candidateRank = getVst3PathPreferenceRank (type.fileOrIdentifier);
+
+            if (candidateRank < existingRank)
+                plugins.getReference (i) = type;
+
+            replaced = true;
+            break;
+        }
+
+        if (! replaced)
+            plugins.add (type);
+    }
+
+    return plugins;
 }
 
 void scanWaveShellFiles (juce::KnownPluginList& knownPluginList,
@@ -112,9 +151,7 @@ void showPluginLoadError (const juce::String& error, const juce::PluginDescripti
             "\u30ea\u30b9\u30c8\u304b\u3089\u500b\u5225\u306e Waves \u30d7\u30e9\u30b0\u30a4\u30f3\u3092\u9078\u3093\u3067 Load \u3057\u3066\u304f\u3060\u3055\u3044\u3002");
     }
     else if (description.manufacturerName.containsIgnoreCase ("Waves")
-             || description.name.containsIgnoreCase ("Waves")
-             || error.containsIgnoreCase ("license")
-             || error.containsIgnoreCase ("licence"))
+             || description.name.containsIgnoreCase ("Waves"))
     {
         message << juce::String::fromUTF8 (
             "\n\n[Waves \u30e9\u30a4\u30bb\u30f3\u30b9\u30a8\u30e9\u30fc]\n"
@@ -124,6 +161,23 @@ void showPluginLoadError (const juce::String& error, const juce::PluginDescripti
             "   (Common Files\\VST3 \u306e WaveShell \u7d4c\u7531)\n"
             "4. Scan \u5f8c\u306b\u518d\u30ed\u30fc\u30c9\n"
             "5. \u6539\u5584\u3057\u306a\u3044\u5834\u5408: Waves Central \u3067\u4fee\u5fa9/\u518d\u30a4\u30f3\u30b9\u30c8\u30fc\u30eb\n\n")
+            << error;
+    }
+    else if (error.containsIgnoreCase ("license")
+             || error.containsIgnoreCase ("licence")
+             || isNonCanonicalVst3Path (description))
+    {
+        message << juce::String::fromUTF8 (
+            "\n\n[\u30e9\u30a4\u30bb\u30f3\u30b9\u691c\u8a3c\u306e\u30d2\u30f3\u30c8]\n"
+            "VST3 \u306f\u6b21\u306e\u6b63\u898f\u30d1\u30b9\u304b\u3089\u8aad\u307f\u8fbc\u3093\u3067\u304f\u3060\u3055\u3044:\n"
+            "  C:\\Program Files\\Common Files\\VST3\n"
+            "VstPlugIns \u7b49\u306e\u30b3\u30d4\u30fc\u3084\u30ab\u30b9\u30bf\u30e0\u30d5\u30a9\u30eb\u30c0\u304b\u3089\u306e\u8aad\u307f\u8fbc\u307f\u3067\u3001"
+            "\u8a8d\u8a3c\u6e08\u307f\u3067\u3082\u300c\u30e9\u30a4\u30bb\u30f3\u30b9\u304c\u898b\u3064\u304b\u3089\u306a\u3044\u300d\u3068\u51fa\u308b\u3053\u3068\u304c\u3042\u308a\u307e\u3059\u3002\n"
+            "1. \u8a2d\u5b9a \u2192 VST \u3067 VST3 \u30bf\u30d6\u306b Common Files\\VST3 \u304c\u542b\u307e\u308c\u3066\u3044\u308b\u304b\u78ba\u8a8d\n"
+            "2. \u518d\u30b9\u30ad\u30e3\u30f3\u5f8c\u3001\u30c8\u30e9\u30c3\u30af VST \u306e\u300cVST3\u300d\u30bf\u30d6\u304b\u3089\u9078\u629e\n"
+            "3. \u30e1\u30fc\u30ab\u30fc\u306e\u30a4\u30f3\u30b9\u30g\u30fc\u30e9\u3067\u30e9\u30a4\u30bb\u30f3\u30b9\u540c\u671f\u3092\u78ba\u8a8d\n"
+            "   (XLN: XLN Online Installer / Waves: Waves Central \u306a\u3069)\n\n")
+            << "Path: " << description.fileOrIdentifier << "\n\n"
             << error;
     }
 
@@ -140,15 +194,6 @@ const juce::PluginDescription* pickPreferredPlugin (const juce::OwnedArray<juce:
 
     return typesFound.getFirst();
 }
-
-void connectChannel (juce::AudioProcessorGraph& graph,
-                     juce::AudioProcessorGraph::NodeID source,
-                     juce::AudioProcessorGraph::NodeID dest,
-                     int channel)
-{
-    graph.addConnection ({ { source, channel }, { dest, channel } },
-                         juce::AudioProcessorGraph::UpdateKind::none);
-}
 } // namespace
 
 PluginChain::PluginChain()
@@ -156,100 +201,39 @@ PluginChain::PluginChain()
                              .getChildFile ("Drizzle")
                              .getChildFile ("dead_mans_pedal.txt"))
 {
+    audioProcessor = std::make_unique<DrizzleAudioProcessor>();
     formatManager = std::make_unique<juce::AudioPluginFormatManager>();
     juce::addDefaultFormatsToManager (*formatManager);
     deadMansPedalFile.getParentDirectory().createDirectory();
 
-    ensureIoNodes();
-    rebuildConnections();
+    trackPluginManager.setFormatManager (formatManager.get());
+    audioProcessor->setTrackPluginManager (&trackPluginManager);
 }
 
 PluginChain::~PluginChain()
 {
     releaseAll();
-    graph.clear();
 }
 
-void PluginChain::ensureIoNodes()
+juce::AudioProcessor& PluginChain::getAudioProcessor() noexcept
 {
-    if (inputNode == nullptr)
-    {
-        inputNode = graph.addNode (std::make_unique<juce::AudioProcessorGraph::AudioGraphIOProcessor> (
-            juce::AudioProcessorGraph::AudioGraphIOProcessor::audioInputNode));
-    }
-
-    if (outputNode == nullptr)
-    {
-        outputNode = graph.addNode (std::make_unique<juce::AudioProcessorGraph::AudioGraphIOProcessor> (
-            juce::AudioProcessorGraph::AudioGraphIOProcessor::audioOutputNode));
-    }
-
-    if (trackMixerNode == nullptr)
-    {
-        auto trackMixerInstance = std::make_unique<TrackMixerProcessor>();
-        trackMixerProcessor = trackMixerInstance.get();
-        trackMixerNode = graph.addNode (std::move (trackMixerInstance));
-    }
-
-    if (gainNode == nullptr)
-    {
-        auto gainProcessorInstance = std::make_unique<GainAudioProcessor>();
-        gainProcessor = gainProcessorInstance.get();
-        gainNode = graph.addNode (std::move (gainProcessorInstance));
-    }
+    return *audioProcessor;
 }
 
 TrackMixerProcessor& PluginChain::getTrackMixer() noexcept
 {
-    jassert (trackMixerProcessor != nullptr);
-    return *trackMixerProcessor;
+    return audioProcessor->getTrackMixer();
 }
 
 const TrackMixerProcessor& PluginChain::getTrackMixer() const noexcept
 {
-    jassert (trackMixerProcessor != nullptr);
-    return *trackMixerProcessor;
+    return audioProcessor->getTrackMixer();
 }
 
-void PluginChain::rebuildConnections()
+void PluginChain::handleAudioDeviceChanged (int activeInputChannels)
 {
-    graph.removeIllegalConnections();
-
-    for (const auto& connection : graph.getConnections())
-        graph.removeConnection (connection, juce::AudioProcessorGraph::UpdateKind::none);
-
-    if (inputNode == nullptr || trackMixerNode == nullptr || gainNode == nullptr || outputNode == nullptr)
-        return;
-
-    const auto inputId      = inputNode->nodeID;
-    const auto trackMixerId = trackMixerNode->nodeID;
-    const auto gainId       = gainNode->nodeID;
-    const auto outputId     = outputNode->nodeID;
-
-    for (int ch = 0; ch < TrackMixerProcessor::maxInputChannels; ++ch)
-        connectChannel (graph, inputId, trackMixerId, ch);
-
-    if (pluginNode != nullptr)
-    {
-        const auto pluginId = pluginNode->nodeID;
-
-        for (int ch = 0; ch < numChannels; ++ch)
-        {
-            connectChannel (graph, trackMixerId, pluginId, ch);
-            connectChannel (graph, pluginId, gainId, ch);
-            connectChannel (graph, gainId, outputId, ch);
-        }
-    }
-    else
-    {
-        for (int ch = 0; ch < numChannels; ++ch)
-        {
-            connectChannel (graph, trackMixerId, gainId, ch);
-            connectChannel (graph, gainId, outputId, ch);
-        }
-    }
-
-    graph.rebuild();
+    if (audioProcessor != nullptr && activeInputChannels > 0)
+        audioProcessor->setConnectedInputChannelCount (activeInputChannels);
 }
 
 void PluginChain::scanFormat (juce::AudioPluginFormat& format, const juce::FileSearchPath& searchPaths)
@@ -295,6 +279,8 @@ void PluginChain::scanPlugins()
         return;
     }
 
+    const juce::FileSearchPath vst3SearchPaths = scanPaths.getSearchPath (PluginPathCategory::Vst3);
+
     for (int i = 0; i < formatManager->getNumFormats(); ++i)
     {
         if (auto* format = formatManager->getFormat (i))
@@ -303,10 +289,8 @@ void PluginChain::scanPlugins()
 
             if (name == "VST3")
             {
-                const auto vst3Paths = scanPaths.getSearchPath (PluginPathCategory::Vst3);
-
-                if (vst3Paths.getNumPaths() > 0)
-                    scanFormat (*format, vst3Paths);
+                if (vst3SearchPaths.getNumPaths() > 0)
+                    scanFormat (*format, vst3SearchPaths);
             }
             else if (name == "VST")
             {
@@ -323,11 +307,7 @@ void PluginChain::scanPlugins()
 
 juce::Array<juce::PluginDescription> PluginChain::getPluginsForUi() const
 {
-    juce::Array<juce::PluginDescription> plugins;
-
-    for (const auto& type : knownPluginList.getTypes())
-        if (isUiSelectablePlugin (type))
-            plugins.add (type);
+    auto plugins = deduplicatePluginsForUi (knownPluginList);
 
     struct PluginNameComparator
     {
@@ -354,15 +334,18 @@ void PluginChain::loadPlugin (const juce::PluginDescription& description)
         return;
     }
 
-    const auto sampleRate = graph.getSampleRate() > 0 ? graph.getSampleRate() : 44100.0;
-    const auto blockSize  = graph.getBlockSize() > 0 ? graph.getBlockSize() : 512;
+    const auto resolved = preferCanonicalPluginDescription (description, knownPluginList);
+    const auto sampleRate = audioProcessor->getSampleRate() > 0 ? audioProcessor->getSampleRate() : 44100.0;
+    const auto blockSize  = audioProcessor->getBlockSize() > 0 ? audioProcessor->getBlockSize() : 512;
+
+    DrizzleVst3Host::prepareForLicensedPluginLoad (resolved.manufacturerName);
 
     juce::String error;
-    auto instance = formatManager->createPluginInstance (description, sampleRate, blockSize, error);
+    auto instance = formatManager->createPluginInstance (resolved, sampleRate, blockSize, error);
 
     if (instance == nullptr)
     {
-        showPluginLoadError (error, description);
+        showPluginLoadError (error, resolved);
         return;
     }
 
@@ -402,67 +385,150 @@ void PluginChain::loadPluginFromFile (const juce::File& pluginFile)
 void PluginChain::setPluginInstance (std::unique_ptr<juce::AudioPluginInstance> instance)
 {
     hidePluginEditor();
-
-    if (pluginNode != nullptr)
-        graph.removeNode (pluginNode);
-
-    instance->enableAllBuses();
-    pluginNode = graph.addNode (std::move (instance));
-    rebuildConnections();
+    audioProcessor->setPluginInstance (std::move (instance));
     sendChangeMessage();
 }
 
 void PluginChain::clearPlugin()
 {
     hidePluginEditor();
+    audioProcessor->setPluginInstance (nullptr);
+    sendChangeMessage();
+}
 
-    if (pluginNode != nullptr)
-    {
-        if (auto* processor = pluginNode->getProcessor())
-            processor->releaseResources();
+void PluginChain::unloadMasterPlugin()
+{
+    clearPlugin();
+}
 
-        graph.removeNode (pluginNode);
-        pluginNode = nullptr;
-        rebuildConnections();
-        sendChangeMessage();
-    }
+bool PluginChain::hasScannedPlugins() const noexcept
+{
+    return knownPluginList.getNumTypes() > 0;
+}
+
+bool PluginChain::isVst2HostingEnabled() noexcept
+{
+#if DRIZZLE_HAS_VST2
+    return true;
+#else
+    return false;
+#endif
 }
 
 void PluginChain::releaseAll()
 {
     hidePluginEditor();
     clearPlugin();
+    trackPluginManager.clearAll();
 
     knownPluginList.clear();
     formatManager = std::make_unique<juce::AudioPluginFormatManager>();
     juce::addDefaultFormatsToManager (*formatManager);
+    trackPluginManager.setFormatManager (formatManager.get());
 
     sendChangeMessage();
 }
 
+juce::Array<juce::PluginDescription> PluginChain::getPluginsForUiByFormat (const juce::String& formatName) const
+{
+    juce::Array<juce::PluginDescription> plugins;
+
+    for (const auto& plugin : getPluginsForUi())
+    {
+        if (formatName.isEmpty() || plugin.pluginFormatName.equalsIgnoreCase (formatName))
+            plugins.add (plugin);
+    }
+
+    return plugins;
+}
+
+bool PluginChain::addTrackPlugin (int trackIndex, const juce::PluginDescription& description)
+{
+    const auto resolved = preferCanonicalPluginDescription (description, knownPluginList);
+    juce::String error;
+
+    if (trackPluginManager.addPlugin (trackIndex, resolved, error))
+        return true;
+
+    if (error.isNotEmpty())
+        showPluginLoadError (error, resolved);
+
+    return false;
+}
+
+bool PluginChain::removeTrackPlugin (int trackIndex, int slotIndex)
+{
+    return trackPluginManager.removePlugin (trackIndex, slotIndex);
+}
+
+int PluginChain::getNumTrackPlugins (int trackIndex) const
+{
+    return trackPluginManager.getNumPlugins (trackIndex);
+}
+
+juce::String PluginChain::getTrackPluginName (int trackIndex, int slotIndex) const
+{
+    return trackPluginManager.getPluginName (trackIndex, slotIndex);
+}
+
+void PluginChain::showTrackPluginEditor (int trackIndex, int slotIndex, juce::Component* modalParent)
+{
+    trackPluginManager.showPluginEditor (trackIndex, slotIndex, modalParent);
+}
+
+void PluginChain::onTrackRemoved (int removedIndex, int numTracksAfterRemove)
+{
+    trackPluginManager.shiftPluginsOnTrackRemove (removedIndex, numTracksAfterRemove);
+}
+
+bool PluginChain::hasPluginLoaded() const noexcept
+{
+    return audioProcessor != nullptr && audioProcessor->hasPluginLoaded();
+}
+
 juce::String PluginChain::getLoadedPluginName() const
 {
-    if (pluginNode == nullptr)
-        return "None";
-
-    if (auto* processor = pluginNode->getProcessor())
-        return processor->getName();
+    if (auto* plugin = audioProcessor != nullptr ? audioProcessor->getPluginInstance() : nullptr)
+        return plugin->getName();
 
     return "None";
 }
 
 void PluginChain::setGain (float newGain)
 {
-    if (gainProcessor != nullptr)
-        gainProcessor->gain.store (newGain);
+    if (audioProcessor != nullptr)
+        audioProcessor->setPluginGain (newGain);
+}
+
+void PluginChain::setMasterGainDb (float gainDb)
+{
+    if (audioProcessor != nullptr)
+        audioProcessor->setMasterGainDb (gainDb);
+}
+
+void PluginChain::setMasterMute (bool mute)
+{
+    if (audioProcessor != nullptr)
+        audioProcessor->setMasterMute (mute);
+}
+
+void PluginChain::setMasterMono (bool mono)
+{
+    if (audioProcessor != nullptr)
+        audioProcessor->setMasterMono (mono);
+}
+
+float PluginChain::getMasterPeakLevel() const noexcept
+{
+    if (audioProcessor != nullptr)
+        return audioProcessor->getMasterPeakLevel();
+
+    return 0.0f;
 }
 
 void PluginChain::showPluginEditor()
 {
-    if (pluginNode == nullptr)
-        return;
-
-    auto* processor = pluginNode->getProcessor();
+    auto* processor = audioProcessor != nullptr ? audioProcessor->getPluginInstance() : nullptr;
 
     if (processor == nullptr || ! processor->hasEditor())
         return;
@@ -499,7 +565,7 @@ void PluginChain::showPluginEditor()
 
 void PluginChain::hidePluginEditor()
 {
-    if (auto* processor = pluginNode != nullptr ? pluginNode->getProcessor() : nullptr)
+    if (auto* processor = audioProcessor != nullptr ? audioProcessor->getPluginInstance() : nullptr)
         if (auto* editor = processor->getActiveEditor())
             processor->editorBeingDeleted (editor);
 

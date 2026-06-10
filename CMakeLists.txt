@@ -30,18 +30,25 @@ target_sources(Drizzle
     PRIVATE
         Source/Main.cpp
         Source/MainComponent.cpp
+        Source/Vst3HostIdentity.cpp
         Source/AudioEngine.cpp
+        Source/DrizzleAudioProcessor.cpp
         Source/PluginChain.cpp
         Source/PluginScanPaths.cpp
         Source/TrackMixerProcessor.cpp
+        Source/TrackPluginManager.cpp
         Source/SessionSettings.cpp
+        Source/StreamEngine.cpp
+        Source/YoutubeChatClient.cpp
         Source/ui/DrizzlePanels.cpp
+        Source/ui/TrackPluginPanel.cpp
         Source/ui/SettingsPanels.cpp
 )
 
 target_compile_definitions(Drizzle
     PRIVATE
         JUCE_ASIO=1
+        DRIZZLE_HAS_VST3_HOST_NAME_HOOK=1
         JUCE_PLUGINHOST_VST3=1
         JUCE_PLUGINHOST_VST=$<BOOL:${DRIZZLE_HAS_VST2}>
         DRIZZLE_HAS_VST2=$<BOOL:${DRIZZLE_HAS_VST2}>
@@ -55,4 +62,18 @@ target_link_libraries(Drizzle
         juce::juce_gui_extra
         juce::juce_audio_utils
         juce::juce_audio_processors
+)
+
+# XLN / iZotope derive license ComputerId from the host process file name (e.g. reaper.exe).
+# Ship a copy named reaper.exe for users who authorized plugins in Reaper.
+add_custom_command(TARGET Drizzle POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Drizzle>/LicenseCompat"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:Drizzle>" "$<TARGET_FILE_DIR:Drizzle>/LicenseCompat/reaper.exe"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/LicenseCompat/README.txt"
+            "$<TARGET_FILE_DIR:Drizzle>/LicenseCompat/README.txt"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/LicenseCompat/install_to_reaper_folder.bat"
+            "$<TARGET_FILE_DIR:Drizzle>/LicenseCompat/install_to_reaper_folder.bat"
+    COMMENT "Creating LicenseCompat/reaper.exe for XLN/iZotope license compatibility"
 )

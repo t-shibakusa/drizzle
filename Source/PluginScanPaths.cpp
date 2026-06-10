@@ -200,6 +200,7 @@ void PluginScanPaths::seedCategoryDefaults (PluginPathCategory category)
             break;
 
         case PluginPathCategory::Vst2:
+            addDirectoryIfExists (list, "C:\\Program Files\\VstPlugIns");
             addDirectoryIfExists (list, "C:\\Program Files\\VSTPlugins");
             addDirectoryIfExists (list, "C:\\Program Files\\Steinberg\\VstPlugins");
 
